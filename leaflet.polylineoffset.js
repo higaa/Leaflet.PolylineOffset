@@ -70,6 +70,13 @@ function intersection(l1a, l1b, l2a, l2b) {
         y: line1.a * x + line1.b,
     };
 }
+function signedArea(p1, p2, p3) {
+    return (p2.x - p1.x) * (p3.y - p1.y) - (p3.x - p1.x) * (p2.y - p1.y);
+}
+function intersects(l1a, l1b, l2a, l2b) {
+    return signedArea(l1a, l1b, l2a) * signedArea(l1a, l1b, l2b) < 0 &&
+        signedArea(l2a, l2b, l1a) * signedArea(l2a, l2b, l1b) < 0;
+}
 
 function translatePoint(pt, dist, heading) {
     return {
@@ -116,17 +123,25 @@ var PolylineOffset = {
             .filter(function(x) { return x; })
     },
 
+    joinOuterAngles: function(s1, s2, offset) {
+        // TODO: different join styles
+        return this.circularArc(s1, s2, offset)
+            .filter(function(x) { return x; })
+    },
+
     joinLineSegments: function(segments, offset) {
+        var offsetSegments = [];
         var joinedPoints = [];
         var first = segments[0];
         var last = segments[segments.length - 1];
 
         if (first && last) {
-            joinedPoints.push(first.offset[0]);
+            offsetSegments.push(segments[0].offset);
             forEachPair(segments, L.bind(function(s1, s2) {
-                joinedPoints = joinedPoints.concat(this.joinSegments(s1, s2, offset));
+                offsetSegments = offsetSegments.concat(this.joinOuterAngles(s1, s2, offset));
+                offsetSegments.push(s2.offset);
             }, this));
-            joinedPoints.push(last.offset[1]);
+            joinedPoints = this.cutInnerAngles(offsetSegments);
         }
 
         return joinedPoints;
@@ -152,14 +167,13 @@ var PolylineOffset = {
         // if the segments are the same angle,
         // there should be a single join point
         if (s1.offsetAngle === s2.offsetAngle) {
-            return [s1.offset[1]];
+            return [];
         }
 
         const signedAngle = this.getSignedAngle(s1.offset, s2.offset);
         // for inner angles, just find the offset segments intersection
-        if ((signedAngle * distance > 0) &&
-            (signedAngle * this.getSignedAngle(s1.offset, [s1.offset[0], s2.offset[1]]) > 0)) {
-            return [intersection(s1.offset[0], s1.offset[1], s2.offset[0], s2.offset[1])];
+        if (signedAngle * distance > 0) {
+            return [];
         }
 
         // draws a circular arc with R = offset distance, C = original meeting point
@@ -174,13 +188,62 @@ var PolylineOffset = {
             endAngle += Math.PI * 2;
         }
         var step = Math.PI / 8;
-        for (var alpha = startAngle; alpha < endAngle; alpha += step) {
+        points.push(rightOffset ? s2.offset[0] : s1.offset[1]);
+        for (var alpha = startAngle + step; alpha < endAngle; alpha += step) {
             points.push(translatePoint(center, distance, alpha));
         }
-        points.push(translatePoint(center, distance, endAngle));
+        points.push(rightOffset ? s1.offset[1] : s2.offset[0]);
 
-        return rightOffset ? points.reverse() : points;
+        points = (rightOffset ? points.reverse() : points);
+
+        var offsetSegments = [];
+        forEachPair(points, L.bind(function(p1, p2) {
+            offsetSegments.push([p1, p2]);
+        }, this));
+        return offsetSegments;
+    },
+
+    cutInnerAngles: function(segments) {
+        var i = 0;
+        while (true) {
+            if (i + 1 >= segments.length) {
+                break;
+            }
+            if (segments[i][1] == segments[i+1][0]) {
+                ++i;
+                continue;
+            }
+            var j = i;
+            while (true) {
+                if (intersects(segments[j][0], segments[j][1], segments[i+1][0], segments[i+1][1])) {
+                    p = intersection(segments[j][0], segments[j][1], segments[i+1][0], segments[i+1][1]);
+                    segments[j][1] = p;
+                    segments[i+1][0] = p;
+                    if (j < i) {
+                        segments.splice(j + 1, i - j);
+                    }
+                    i = j + 1;
+                    break;
+                }
+                if (j == 0) {
+                    segments.splice(i + 1, 1);
+                    ++i;
+                    break;
+                }
+                --j;
+
+            }
+        }
+
+        var points = [];
+        points.push(segments[0][0]);
+        for (var i1 = 0; i1 < segments.length; ++i1) {
+            points.push(segments[i1][1])
+        }
+
+        return points;
     }
+
 }
 
 // Modify the L.Polyline class by overwriting the projection function
